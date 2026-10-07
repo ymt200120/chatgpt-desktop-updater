@@ -1,0 +1,14 @@
+# Downloaded MSIX packages and temporary download artifacts must never be
+# committed; the updater keeps them under %LOCALAPPDATA%\ChatGPTUpdater.
+*.msix
+*.partial
+
+# Local acceptance logs, GUI fixtures, and machine-specific task metadata.
+chatgpt-updater/tests/evidence/
+
+# Private development prompts and machine-specific implementation report.
+/ChatGPT_Updater*.md
+chatgpt-updater/IMPLEMENTATION_REPORT.md
+
+# Generated source release archives.
+/dist/

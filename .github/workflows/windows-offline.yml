@@ -1,0 +1,40 @@
+name: Windows offline tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: Offline suites (${{ matrix.runtime }})
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [ps5, ps7]
+
+    steps:
+      # actions/checkout v7.0.1, pinned to the verified commit.
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Run offline suites
+        shell: powershell
+        run: |
+          $runtime = if ('${{ matrix.runtime }}' -eq 'ps7') {
+            (Get-Command pwsh.exe -CommandType Application -ErrorAction Stop).Source
+          } else {
+            (Get-Command powershell.exe -CommandType Application -ErrorAction Stop).Source
+          }
+          & $runtime -NoProfile -STA -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\scripts\Run-OfflineTests.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
