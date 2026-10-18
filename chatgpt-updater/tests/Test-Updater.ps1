@@ -137,6 +137,7 @@ function Reset-MockState {
     $script:LastDownloadUrl = $null
     $script:LastDownloadOutput = $null
     $script:LastUiLaunch = $null
+    $script:LastDefer = $null
     $script:MockPromptChoice = 'Install'
 }
 
@@ -218,9 +219,10 @@ function Get-UtAuthenticodeSignature {
 }
 
 function Install-UtPackage {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)][string]$Path, [switch]$DeferRegistration)
     $script:Calls.Deploy++
     $script:DeployedPaths += $Path
+    $script:LastDefer = [bool]$DeferRegistration
     if ($null -ne $script:MockDeployThrow) { throw $script:MockDeployThrow }
 }
 
@@ -481,6 +483,7 @@ Invoke-Case 'installed < latest: download, verify, mock deploy' {
     Assert-Equal 1 $script:Calls.Download 'one download'
     Assert-Equal 2 $script:Calls.Signature 'preparation and confirmation signature checks (mocked API)'
     Assert-Equal 1 $script:Calls.Deploy 'one deploy'
+    Assert-True ([bool]$script:LastDefer) 'deployment requests deferred registration for an in-use package'
     Assert-Equal 0 $script:Calls.StartApp 'app not launched'
     Assert-Equal $script:MockHead.Headers['etag'][0] $script:LastIfMatch 'strong ETag sent as If-Match'
     Assert-True (-not (Test-Path -LiteralPath (Split-Path -Parent $script:LastDownloadOutput))) 'successful normal update removed its run directory'
@@ -1108,13 +1111,22 @@ Invoke-Case 'pre-deploy query failure or family change: reject, no deploy' {
 # 19: deployment errors
 # ===========================================================================
 Invoke-Case 'Add-AppxPackage D02/D28 failure: non-zero, no kill, no uninstall' {
+    $fakeActivityId = '11111111-2222-3333-4444-555555555555'
     foreach ($hresult in @('0x80073D02', '0x80073D28')) {
         Reset-MockState
         $fixture = New-ValidFixtureFile -Version '26.930.7945.0'
         Set-ValidUpdateHead -FixturePath $fixture -Version '26.930.7945.0'
         Set-InstalledSequence -Items @((New-MockPackage -Version '26.707.3748.0'), (New-MockPackage -Version '26.707.3748.0'), (New-MockPackage -Version '26.707.3748.0'))
-        $script:MockDeployThrow = ("Add-AppxPackage failed: {0} (0x{1:x8}) ActivityId 11111111-2222-3333-4444-555555555555" -f $hresult, (Get-Random))
-        $code = Invoke-Production
+        $script:MockDeployThrow = ("Add-AppxPackage failed: {0} ActivityId {1}" -f $hresult, $fakeActivityId)
+        if ($hresult -eq '0x80073D02') {
+            $deploymentOutput = Invoke-ProductionOutput
+            $code = $deploymentOutput.Code
+            $normalizedDiagnosticText = [regex]::Replace([string]$deploymentOutput.Text, '\x1b\[[0-9;?]*[ -/]*[@-~]', '') -replace '\s', ''
+            Assert-True ($normalizedDiagnosticText -like ('*' + $fakeActivityId + '*')) 'deployment diagnostics preserve the raw ActivityId'
+            Assert-True ($deploymentOutput.Text -like '*package resources are in use*') 'D02 diagnostics explain package/background resource use'
+        } else {
+            $code = Invoke-Production
+        }
         Assert-Equal 10 $code ("deployment failure code for {0}" -f $hresult)
         Assert-Equal 1 $script:Calls.Deploy 'deploy attempted once'
         Assert-Equal 0 $script:Calls.Remove 'no uninstall'
@@ -1128,6 +1140,21 @@ Invoke-Case 'Add-AppxPackage D02/D28 failure: non-zero, no kill, no uninstall' {
 # ===========================================================================
 # 20: post-install verification
 # ===========================================================================
+Invoke-Case 'deferred registration is reported without claiming success' {
+    $fixture = New-ValidFixtureFile -Version '26.930.7945.0'
+    Set-ValidUpdateHead -FixturePath $fixture -Version '26.930.7945.0'
+    $oldPackage = New-MockPackage -Version '26.707.3748.0'
+    Set-InstalledSequence -Items @($oldPackage, $oldPackage, $oldPackage, $oldPackage)
+    $result = Invoke-ProductionOutput
+    Assert-Equal 14 $result.Code 'deferred registration has its own exit code'
+    Assert-True ($result.Text -like '*deferred registration*') 'deferred result explains that registration is pending'
+    Assert-True ($result.Text -notlike '*Update successful*') 'deferred result is not reported as an installed update'
+    Assert-Equal 1 $script:Calls.Deploy 'deploy was attempted once'
+    Assert-True ([bool]$script:LastDefer) 'deferred-registration option reached the deployment boundary'
+    $keptPackages = @(Get-ChildItem -LiteralPath (Get-UtCachePackagesDirectory) -Filter '*.msix' -File -Force)
+    Assert-Equal 1 $keptPackages.Count 'deferred registration keeps the verified cache package for the next launch'
+}
+
 Invoke-Case 'post-install missing / low / wrong family / bad status: NOT confirmed' {
     $null = New-ValidUpdateScenario
     Set-InstalledSequence -Items @((New-MockPackage -Version '26.707.3748.0'), (New-MockPackage -Version '26.707.3748.0'), (New-MockPackage -Version '26.707.3748.0'), $script:UninstalledSentinel)

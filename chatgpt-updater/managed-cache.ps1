@@ -537,7 +537,7 @@ function Invoke-UtConfirmedInstall {
             if ($null -ne $before -and (Compare-UtVersion -A $before.Version -B $candidate.Identity.Version) -ge 0) {
                 return New-UtInstallResult -Code $script:UtExitOk -Status 'AlreadyCurrent' -Message ("Installed version {0} is already current or newer." -f $before.Version)
             }
-            try { Install-UtPackage -Path $candidate.Path } catch {
+            try { Install-UtPackage -Path $candidate.Path -DeferRegistration } catch {
                 Write-UtDeploymentFailure -ErrorRecord $_
                 return New-UtInstallResult -Code $script:UtExitDeployment -Status 'Failed' -Message ("Add-AppxPackage failed: {0}" -f $_.Exception.Message)
             }
@@ -547,15 +547,23 @@ function Invoke-UtConfirmedInstall {
             if ($null -ne $verifyError) {
                 return New-UtInstallResult -Code $script:UtExitVerify -Status 'Failed' -Message "Installation is NOT confirmed: the post-install package query failed: $verifyError"
             }
-            if ($null -eq $after -or (Compare-UtVersion -A $after.Version -B $candidate.Identity.Version) -lt 0) {
-                return New-UtInstallResult -Code $script:UtExitVerify -Status 'Failed' -Message 'Installation is NOT confirmed: the registered package is missing or lower than the candidate.'
+            if ($null -ne $after -and (Compare-UtVersion -A $after.Version -B $candidate.Identity.Version) -ge 0) {
+                if ($null -ne $candidate.Lease) {
+                    $candidate.Lease.Dispose()
+                    $candidate.Lease = $null
+                }
+                Remove-UtCacheRecord -Key $ExpectedKey
+                return New-UtInstallResult -Code $script:UtExitOk -Status 'Installed' -Message ("Update successful: {0} (Status {1})." -f $after.Version, $after.Status)
             }
-            if ($null -ne $candidate.Lease) {
-                $candidate.Lease.Dispose()
-                $candidate.Lease = $null
+            # Add-AppxPackage succeeded but the old package is still registered.
+            # That is the expected result when Windows honored the deferred
+            # registration request because an app or packaged service was in use.
+            # Keep the verified cache entry until a later worker run observes the
+            # new registered version; never report this as an installed update.
+            if ($null -ne $after -and $null -ne $before -and (Compare-UtVersion -A $after.Version -B $before.Version) -eq 0) {
+                return New-UtInstallResult -Code $script:UtExitDeferred -Status 'Deferred' -Message ("Update staged with deferred registration: the registered version is still {0}. Windows should complete registration on the next ChatGPT launch. If it does not, restart Windows and run the updater again. The verified package remains in the cache." -f $after.Version)
             }
-            Remove-UtCacheRecord -Key $ExpectedKey
-            return New-UtInstallResult -Code $script:UtExitOk -Status 'Installed' -Message ("Update successful: {0} (Status {1})." -f $after.Version, $after.Status)
+            return New-UtInstallResult -Code $script:UtExitVerify -Status 'Failed' -Message 'Installation is NOT confirmed: the registered package is missing or lower than the candidate.'
         } catch {
             return New-UtInstallResult -Code (Get-UtErrorCode -ErrorRecord $_ -Default $script:UtExitSecurity) -Status 'Failed' -Message $_.Exception.Message
         }

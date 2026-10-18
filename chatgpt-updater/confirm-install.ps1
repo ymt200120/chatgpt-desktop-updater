@@ -17,7 +17,7 @@ param(
     [Alias('TestMode')][switch]$UbCliTestMode,
     [Alias('TestChoice')][ValidateSet('Install','Later','Timeout','Cancel','X','Esc')][string]$UbCliTestChoice,
     [Alias('Demo')][switch]$UbCliDemo,
-    [Alias('DemoResult')][ValidateSet('Success','D02','Changed')][string]$UbCliDemoResult = 'Success',
+    [Alias('DemoResult')][ValidateSet('Success','Deferred','D02','Changed')][string]$UbCliDemoResult = 'Success',
     [Alias('DemoChoice')][ValidateSet('Install','Later','Timeout','Cancel','X','Esc')][string]$UbCliDemoChoice,
     [Alias('TimeoutSeconds')][int]$UbCliTimeoutSeconds = 600,
     [Alias('StartupMarker')][string]$UbCliStartupMarker,
@@ -73,7 +73,7 @@ public sealed class UbPromptForm : Form {
         MinimizeBox = false;
         KeyPreview = true;
         AutoSize = false;
-        ClientSize = new Size(470, 250);
+        ClientSize = new Size(470, 320);
 
         var title = new Label();
         title.Text = "ChatGPT \u65b0\u7248\u672c\u5df2\u51c6\u5907\u597d";
@@ -88,27 +88,27 @@ public sealed class UbPromptForm : Form {
 
         var explanation = new Label();
         explanation.Text = "\u5b89\u88c5\u5305\u5df2\u4e0b\u8f7d\uff0c\u51c6\u5907\u9636\u6bb5\u5b89\u5168\u9a8c\u8bc1\u901a\u8fc7\u3002" + Environment.NewLine +
-            "\u5b89\u88c5\u524d\u4f1a\u518d\u6b21\u9a8c\u8bc1\u3002\u8bf7\u5148\u4fdd\u5b58\u5de5\u4f5c\u5e76\u6b63\u5e38\u9000\u51fa ChatGPT\u3002";
+            "\u5b89\u88c5\u524d\u4f1a\u518d\u6b21\u9a8c\u8bc1\u3002\u82e5 ChatGPT \u6216\u540e\u53f0\u670d\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u66f4\u65b0\u4f1a\u6682\u5b58\u5e76\u5728\u4e0b\u6b21\u542f\u52a8\u65f6\u5b8c\u6210\uff0c\u4e0d\u4f1a\u5f3a\u5236\u5173\u95ed\u5e94\u7528\u6216\u505c\u6b62\u670d\u52a1\u3002";
         explanation.AutoSize = true;
-        explanation.MaximumSize = new Size(430, 70);
-        explanation.Location = new Point(20, 102);
+        explanation.MaximumSize = new Size(430, 80);
+        explanation.Location = new Point(20, 100);
 
         StatusLabel = new Label();
         StatusLabel.Text = "\u7b49\u5f85\u9009\u62e9\uff08\u65e0\u4eba\u56de\u5e94\u5c06\u5728\u7ea6 10 \u5206\u949f\u540e\u7a0d\u540e\uff09";
         StatusLabel.AutoSize = true;
-        StatusLabel.MaximumSize = new Size(430, 35);
-        StatusLabel.Location = new Point(20, 158);
+        StatusLabel.MaximumSize = new Size(430, 55);
+        StatusLabel.Location = new Point(20, 190);
 
         InstallButton = new Button();
         InstallButton.Text = "\u7acb\u5373\u5b89\u88c5";
         InstallButton.Size = new Size(115, 32);
-        InstallButton.Location = new Point(215, 198);
+        InstallButton.Location = new Point(215, 260);
         InstallButton.TabStop = false;
 
         LaterButton = new Button();
         LaterButton.Text = "\u7a0d\u540e";
         LaterButton.Size = new Size(95, 32);
-        LaterButton.Location = new Point(340, 198);
+        LaterButton.Location = new Point(340, 260);
         LaterButton.TabStop = true;
 
         Controls.Add(title);
@@ -180,16 +180,17 @@ function New-UbDemoState {
 }
 
 function Get-UbDemoInstallResult {
-    param([ValidateSet('Success','D02','Changed')][string]$Result = 'Success')
+    param([ValidateSet('Success','Deferred','D02','Changed')][string]$Result = 'Success')
     switch ($Result) {
         'Success' { return [pscustomobject]@{ Code = 0; Status = 'Installed'; Message = 'TEST/MOCK: installation verified successfully.' } }
-        'D02' { return [pscustomobject]@{ Code = 10; Status = 'Failed'; Message = 'TEST/MOCK: 0x80073D02; close ChatGPT normally and retry.' } }
+        'Deferred' { return [pscustomobject]@{ Code = 14; Status = 'Deferred'; Message = 'TEST/MOCK: update staged with deferred registration; the registered version is unchanged.' } }
+        'D02' { return [pscustomobject]@{ Code = 10; Status = 'Failed'; Message = 'TEST/MOCK: 0x80073D02; package resources are in use. A background service may still hold them even when no ChatGPT window is open. Update incomplete; cached package retained. See background.log for details.' } }
         'Changed' { return [pscustomobject]@{ Code = 0; Status = 'CandidateChanged'; Message = 'TEST/MOCK: HEAD snapshot changed; the candidate was not installed.' } }
     }
 }
 
 function Invoke-UbInstallBoundary {
-    param([Parameter(Mandatory = $true)][string]$Key, [Parameter(Mandatory = $true)][string]$Version, [switch]$Mock, [ValidateSet('Success','D02','Changed')][string]$MockResult = 'Success')
+    param([Parameter(Mandatory = $true)][string]$Key, [Parameter(Mandatory = $true)][string]$Version, [switch]$Mock, [ValidateSet('Success','Deferred','D02','Changed')][string]$MockResult = 'Success')
     if ($Mock) { return Get-UbDemoInstallResult -Result $MockResult }
     # This is the sole production consent boundary.  The worker has no call
     # path to this function; it only launches this process after the button.
@@ -202,7 +203,7 @@ function Start-UbInstallRunspace {
         [Parameter(Mandatory = $true)][string]$Key,
         [Parameter(Mandatory = $true)][string]$Version,
         [switch]$Mock,
-        [ValidateSet('Success','D02','Changed')][string]$MockResult = 'Success'
+        [ValidateSet('Success','Deferred','D02','Changed')][string]$MockResult = 'Success'
     )
     $pool = $null
     $ps = $null
@@ -217,7 +218,8 @@ function Start-UbInstallRunspace {
 param($corePath, $candidateKey, $candidateVersion, $isMock, $mockResult)
 if ($isMock) {
     switch ($mockResult) {
-        'D02' { [pscustomobject]@{ Code = 10; Status = 'Failed'; Message = 'TEST/MOCK: 0x80073D02; close ChatGPT normally and retry.' }; return }
+        'Deferred' { [pscustomobject]@{ Code = 14; Status = 'Deferred'; Message = 'TEST/MOCK: update staged with deferred registration; the registered version is unchanged.' }; return }
+        'D02' { [pscustomobject]@{ Code = 10; Status = 'Failed'; Message = 'TEST/MOCK: 0x80073D02; package resources are in use. A background service may still hold them even when no ChatGPT window is open. Update incomplete; cached package retained. See background.log for details.' }; return }
         'Changed' { [pscustomobject]@{ Code = 0; Status = 'CandidateChanged'; Message = 'TEST/MOCK: HEAD snapshot changed; the candidate was not installed.' }; return }
         default { [pscustomobject]@{ Code = 0; Status = 'Installed'; Message = 'TEST/MOCK: installation verified successfully.' }; return }
     }
@@ -249,6 +251,9 @@ function Complete-UbInstallResult {
     if ($status -eq 'Installed' -or $status -eq 'AlreadyCurrent') {
         $null = Clear-UbCandidate -Root $StateRoot -Message $status
         Write-UbLog -Root $StateRoot -Message ("Confirmed installation completed: {0}." -f $status)
+    } elseif ($status -eq 'Deferred') {
+        $null = Set-UbDeferred -Root $StateRoot
+        Write-UbLog -Root $StateRoot -Message ('Confirmed installation deferred; Ready candidate retained until the next launch: ' + $message)
     } elseif ($status -eq 'CandidateChanged') {
         $null = Clear-UbCandidate -Root $StateRoot -Message 'Candidate changed; a later worker run must prepare and ask again.' -ImmediateRetry
         Write-UbLog -Root $StateRoot -Message 'Candidate changed during confirmation; no installation was performed.'
@@ -260,7 +265,7 @@ function Complete-UbInstallResult {
 }
 
 function Invoke-UbTestPrompt {
-    param([Parameter(Mandatory = $true)][string]$StateRoot, [Parameter(Mandatory = $true)]$Candidate, [ValidateSet('Install','Later','Timeout','Cancel','X','Esc')][string]$Choice, [switch]$MockInstall, [ValidateSet('Success','D02','Changed')][string]$MockResult = 'Success', [datetime]$PromptNow = [datetime]::MinValue)
+    param([Parameter(Mandatory = $true)][string]$StateRoot, [Parameter(Mandatory = $true)]$Candidate, [ValidateSet('Install','Later','Timeout','Cancel','X','Esc')][string]$Choice, [switch]$MockInstall, [ValidateSet('Success','Deferred','D02','Changed')][string]$MockResult = 'Success', [datetime]$PromptNow = [datetime]::MinValue)
     if ([string]::IsNullOrWhiteSpace($Choice)) { $Choice = 'Later' }
     if ($Choice -eq 'Install') {
         $result = Invoke-UbInstallBoundary -Key $Candidate.Key -Version $Candidate.Version -Mock:$MockInstall -MockResult $MockResult
@@ -281,7 +286,7 @@ function Invoke-UbConfirmationPrompt {
         [switch]$TestMode,
         [ValidateSet('Install','Later','Timeout','Cancel','X','Esc')][string]$Choice,
         [switch]$DemoMode,
-        [ValidateSet('Success','D02','Changed')][string]$MockResult = 'Success',
+        [ValidateSet('Success','Deferred','D02','Changed')][string]$MockResult = 'Success',
         [int]$PromptTimeoutSeconds = 600,
         [switch]$OpenApp,
         [datetime]$PromptNow = [datetime]::MinValue,
@@ -357,6 +362,7 @@ function Invoke-UbConfirmationPrompt {
         })
         $form.Add_FormClosing({ param($sender,$event)
             if ($script:UbInstallActive) { $event.Cancel = $true; $sender.Hide(); Write-UbLog -Root $StateRoot -Message 'Install progress window hidden; deployment continues.'; return }
+            if ($script:UbInstallComplete) { if ($null -eq $script:UbDecision) { $script:UbDecision = 'Close' }; return }
             if ($script:UbDecision -eq $null) { $script:UbDecision = 'Later'; $null = Set-UbSnooze -Root $StateRoot; Write-UbLog -Root $StateRoot -Message 'Prompt closed (X); no installation was authorized.' }
         })
         $timer.Add_Tick({
@@ -380,7 +386,8 @@ function Invoke-UbConfirmationPrompt {
             $operation.PowerShell.Dispose(); $operation.Runspace.Dispose()
             $script:UbInstallActive = $false; $script:UbInstallComplete = $true; $script:UbPromptResult = $result
             if ([string]$result.Status -eq 'Installed' -or [string]$result.Status -eq 'AlreadyCurrent') { $form.StatusLabel.Text = ConvertFrom-UbUnicodeText '\u5b89\u88c5\u5df2\u6210\u529f\u5e76\u7ecf\u6838\u9a8c\u3002' }
-            elseif ([string]$result.Message -like '*0x80073D02*') { $form.StatusLabel.Text = ConvertFrom-UbUnicodeText '0x80073D02\uff1a\u8bf7\u6b63\u5e38\u9000\u51fa ChatGPT \u540e\u91cd\u8bd5\u3002' }
+            elseif ([string]$result.Status -eq 'Deferred') { $form.StatusLabel.Text = ConvertFrom-UbUnicodeText '\u66f4\u65b0\u5df2\u6682\u5b58\uff1b\u4e0b\u6b21\u542f\u52a8 ChatGPT \u65f6\u7531 Windows \u5b8c\u6210\u6ce8\u518c\u3002\u82e5\u4ecd\u672a\u66f4\u65b0\uff0c\u8bf7\u91cd\u542f Windows \u540e\u518d\u6b21\u8fd0\u884c\u66f4\u65b0\u5668\u3002' }
+            elseif ([string]$result.Message -like '*0x80073D02*') { $form.StatusLabel.Text = ConvertFrom-UbUnicodeText '0x80073D02\uff1a\u5b89\u88c5\u5305\u8d44\u6e90\u88ab\u5360\u7528\uff1b\u65e0 ChatGPT \u7a97\u53e3\u65f6\uff0c\u540e\u53f0\u670d\u52a1\u4ecd\u53ef\u5360\u7528\u3002\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u7f13\u5b58\u5305\u5df2\u4fdd\u7559\uff1b\u8bf7\u91cd\u542f Windows \u540e\u91cd\u8bd5\uff0c\u8be6\u89c1 background.log\u3002' }
             else { $form.StatusLabel.Text = [string]$result.Message }
             if ($OpenApp -and -not $DemoMode -and [string]$result.Status -eq 'Installed') {
                 try { Start-UtApp; Write-UbLog -Root $StateRoot -Message 'OpenApp launched after confirmed Installed result.' }

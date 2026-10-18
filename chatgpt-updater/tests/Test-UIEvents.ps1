@@ -244,6 +244,7 @@ function Invoke-UiGuardConfirmedInstall {
     throw 'TEST/MOCK guard: production install reached the UI event test.'
 }
 function Invoke-UiGuardInstallPackage {
+    param([string]$Path, [switch]$DeferRegistration)
     $script:ForbiddenProductionCalls++
     throw 'TEST/MOCK guard: Add-AppxPackage boundary reached the UI event test.'
 }
@@ -256,6 +257,7 @@ function Invoke-UiProductionMockRunspaceChecks {
     param([Parameter(Mandatory = $true)][scriptblock]$ProductionStart)
     $checks = @(
         @{ Name = 'Success'; Expected = 'Installed' },
+        @{ Name = 'Deferred'; Expected = 'Deferred' },
         @{ Name = 'D02'; Expected = 'Failed' },
         @{ Name = 'Changed'; Expected = 'CandidateChanged' }
     )
@@ -295,7 +297,7 @@ function Invoke-UiScenario {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][ValidateSet('Later','X','Esc','Enter','Timeout','Install','RepeatedInstall','ProgressClose','StartupFailure')][string]$Action,
-        [ValidateSet('Success','D02','Changed')][string]$MockResult = 'Success',
+        [ValidateSet('Success','Deferred','D02','Changed')][string]$MockResult = 'Success',
         [int]$PromptTimeoutSeconds = 600,
         [switch]$ThrowOnStart
     )
@@ -322,6 +324,14 @@ function Invoke-UiScenario {
         Driver = $null
         DriverError = $null
         Unhandled = $null
+        StatusLabelText = $null
+        StatusLabelHeight = 0
+        StatusLabelPreferredHeight = 0
+        StatusLabelMeasuredHeight = 0
+        StatusLabelBottom = 0
+        InstallButtonTop = 0
+        LaterButtonTop = 0
+        ClientHeight = 0
         ActionSent = $false
         CloseSent = $false
         CloseProgressAttempted = $false
@@ -345,6 +355,18 @@ function Invoke-UiScenario {
                 return
             }
             $run.Form = $form
+            if ($script:UbInstallComplete -and [string]::IsNullOrWhiteSpace([string]$run.StatusLabelText)) {
+                $run.StatusLabelText = [string]$form.StatusLabel.Text
+                $run.StatusLabelHeight = [int]$form.StatusLabel.Height
+                $run.StatusLabelPreferredHeight = [int]$form.StatusLabel.PreferredHeight
+                $measureSize = [System.Drawing.Size]::new([int]$form.StatusLabel.MaximumSize.Width, 1000)
+                $measureFlags = [System.Windows.Forms.TextFormatFlags]::WordBreak
+                $run.StatusLabelMeasuredHeight = [int]([System.Windows.Forms.TextRenderer]::MeasureText($form.StatusLabel.Text, $form.StatusLabel.Font, $measureSize, $measureFlags)).Height
+                $run.StatusLabelBottom = [int]$form.StatusLabel.Bottom
+                $run.InstallButtonTop = [int]$form.InstallButton.Top
+                $run.LaterButtonTop = [int]$form.LaterButton.Top
+                $run.ClientHeight = [int]$form.ClientSize.Height
+            }
             if (-not $run.Seen) {
                 $run.Seen = $true
                 $run.FirstFormText = [string]$form.Text
@@ -465,6 +487,14 @@ function Invoke-UiScenario {
         MockResult = $MockResult
         ResultStatus = $status
         ResultMessage = if ($null -eq $result) { $null } else { [string](Get-UbProperty $result 'Message') }
+        StatusLabelText = [string]$script:UiRun.StatusLabelText
+        StatusLabelHeight = [int]$script:UiRun.StatusLabelHeight
+        StatusLabelPreferredHeight = [int]$script:UiRun.StatusLabelPreferredHeight
+        StatusLabelMeasuredHeight = [int]$script:UiRun.StatusLabelMeasuredHeight
+        StatusLabelBottom = [int]$script:UiRun.StatusLabelBottom
+        InstallButtonTop = [int]$script:UiRun.InstallButtonTop
+        LaterButtonTop = [int]$script:UiRun.LaterButtonTop
+        ClientHeight = [int]$script:UiRun.ClientHeight
         StartCalls = [int]$script:UiRun.StartCalls
         MockBoundary = [bool]$script:UiRun.LastMock
         EnteredProductionForm = [bool]$script:UiRun.Seen
@@ -573,8 +603,38 @@ try {
     $success = Invoke-UiScenario -Name 'InstallSuccess' -Action Install -MockResult Success
     Assert-UiScenario -Case $success -Statuses @('Installed','AlreadyCurrent') -HasCandidate $false -Snoozed $false -StartCalls 1
 
+    $deferred = Invoke-UiScenario -Name 'InstallDeferred' -Action Install -MockResult Deferred
+    Assert-UiScenario -Case $deferred -Statuses @('Deferred') -HasCandidate $true -Snoozed $true -StartCalls 1
+    $deferredHint = [string]$deferred.Evidence.StatusLabelText
+    $deferredText = ConvertFrom-UbUnicodeText '\u66f4\u65b0\u5df2\u6682\u5b58'
+    $nextLaunchText = ConvertFrom-UbUnicodeText '\u4e0b\u6b21\u542f\u52a8'
+    Assert-Ui ($deferredHint -like ('*' + $deferredText + '*') -and $deferredHint -like ('*' + $nextLaunchText + '*')) 'Deferred UI hint explains that registration completes on the next launch'
+    Assert-Ui ([int]$deferred.Evidence.StatusLabelHeight -ge [int]$deferred.Evidence.StatusLabelMeasuredHeight) 'Deferred UI status label contains its full measured text'
+
     $d02 = Invoke-UiScenario -Name 'InstallD02' -Action Install -MockResult D02
     Assert-UiScenario -Case $d02 -Statuses @('Failed') -HasCandidate $true -Snoozed $true -StartCalls 1
+    $d02Hint = [string]$d02.Evidence.StatusLabelText
+    $resourceText = ConvertFrom-UbUnicodeText '\u5b89\u88c5\u5305\u8d44\u6e90'
+    $serviceText = ConvertFrom-UbUnicodeText '\u540e\u53f0\u670d\u52a1'
+    $noWindowText = ConvertFrom-UbUnicodeText '\u65e0 ChatGPT \u7a97\u53e3'
+    $incompleteText = ConvertFrom-UbUnicodeText '\u66f4\u65b0\u672a\u5b8c\u6210'
+    $cachedText = ConvertFrom-UbUnicodeText '\u7f13\u5b58\u5305'
+    $oldHintText = ConvertFrom-UbUnicodeText '\u6b63\u5e38\u9000\u51fa ChatGPT'
+    $restartText = ConvertFrom-UbUnicodeText '\u91cd\u542f Windows \u540e\u91cd\u8bd5'
+    Assert-Ui (
+        $d02Hint -like '*0x80073D02*' -and
+        $d02Hint -like ('*' + $resourceText + '*') -and
+        $d02Hint -like ('*' + $serviceText + '*') -and
+        $d02Hint -like ('*' + $noWindowText + '*') -and
+        $d02Hint -like ('*' + $incompleteText + '*') -and
+        $d02Hint -like ('*' + $cachedText + '*') -and
+        $d02Hint -like ('*' + $restartText + '*') -and
+        $d02Hint -like '*background.log*' -and
+        $d02Hint -notlike ('*' + $oldHintText + '*')
+    ) 'D02 UI hint explains package/background-service use, incomplete update, retained cache and restart guidance'
+    Assert-Ui ([int]$d02.Evidence.StatusLabelHeight -ge [int]$d02.Evidence.StatusLabelMeasuredHeight) 'D02 UI status label contains its full uncapped measured text'
+    Assert-Ui ([int]$d02.Evidence.StatusLabelBottom -lt [int]$d02.Evidence.InstallButtonTop) 'D02 UI status label does not overlap the install button'
+    Assert-Ui ([int]$d02.Evidence.LaterButtonTop -ge [int]$d02.Evidence.InstallButtonTop -and [int]$d02.Evidence.LaterButtonTop -lt [int]$d02.Evidence.ClientHeight) 'D02 UI buttons remain inside the form client area'
 
     $changed = Invoke-UiScenario -Name 'InstallChanged' -Action Install -MockResult Changed
     Assert-UiScenario -Case $changed -Statuses @('CandidateChanged') -HasCandidate $false -Snoozed $false -StartCalls 1

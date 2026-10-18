@@ -56,6 +56,7 @@ function Reset-CacheFixture {
     if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force -ErrorAction SilentlyContinue }
     $script:Calls = @{ Download = 0; Deploy = 0; Signature = 0; Head = 0 }
     $script:DeployError = $null
+    $script:LastDefer = $false
     $script:MockSignatureStatus = 'Valid'
     $script:MissingDependency = $false
     $script:HeadThrow = $null
@@ -160,8 +161,9 @@ function Invoke-UtCurlDownload {
     return [pscustomobject]@{ ExitCode = 0; Text = "HTTPCODE=200`nFINALURL=https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix"; Headers = $script:Head.Headers; HeaderStatusCode = 200 }
 }
 function Install-UtPackage {
-    param([string]$Path)
+    param([string]$Path, [switch]$DeferRegistration)
     $script:Calls.Deploy++
+    $script:LastDefer = [bool]$DeferRegistration
     if ($null -ne $script:DeployError) { throw $script:DeployError }
     $script:Installed = [pscustomobject]@{ Name = 'OpenAI.Codex'; PackageFamilyName = 'OpenAI.Codex_2p2nqsd0c76g0'; Version = '26.930.7945.0'; Status = 'Ok'; Architecture = 'X64'; Publisher = $script:UtManifestPublisher; IsFramework = $true; PackageFullName = 'OpenAI.Codex_26.930.7945.0_x64__family' }
 }
@@ -326,6 +328,7 @@ Invoke-Case 'confirmed install revalidates, deploys once, verifies, and consumes
     $result = Invoke-UtConfirmedInstall -ExpectedKey $fresh.Key -ExpectedVersion $metadata.Version
     Assert-Equal 'Installed' $result.Status 'confirmed install status'
     Assert-Equal 1 $script:Calls.Deploy 'one deployment'
+    Assert-True ([bool]$script:LastDefer) 'confirmed install requests deferred registration'
     Assert-True (-not (Test-Path -LiteralPath (Get-UtCachePathForKey -Kind Package -Key $fresh.Key) -PathType Leaf)) 'used package removed after confirmed success'
 }
 

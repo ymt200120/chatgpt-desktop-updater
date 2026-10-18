@@ -26,18 +26,7 @@ if ([string]::IsNullOrWhiteSpace($SourceRoot)) { $SourceRoot = $PSScriptRoot }
 . (Join-Path $SourceRoot 'background-common.ps1') -CorePath (Join-Path $SourceRoot 'update-chatgpt.ps1')
 $script:UgAllowCustomDestination = [bool]$TestMode
 
-$script:UgProductionFiles = @(
-    'update-chatgpt.ps1',
-    'update-chatgpt.cmd',
-    'background-common.ps1',
-    'segmented-download.ps1',
-    'managed-cache.ps1',
-    'background-worker.ps1',
-    'background-worker.cmd',
-    'confirm-install.ps1',
-    'manage-background.ps1',
-    'manage-background.cmd'
-)
+$script:UgProductionFiles = @($script:UtUpdaterFiles)
 
 function Get-UgCurrentSid {
     return ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value

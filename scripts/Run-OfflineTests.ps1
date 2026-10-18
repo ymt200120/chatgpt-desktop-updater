@@ -146,6 +146,7 @@ function Invoke-OfflineRunner {
         [pscustomobject]@{ Name = 'Cache'; Path = Join-Path $projectRoot 'tests\Test-Cache.ps1'; Arguments = @() },
         [pscustomobject]@{ Name = 'SegmentedDownload'; Path = Join-Path $projectRoot 'tests\Test-SegmentedDownload.ps1'; Arguments = @() },
         [pscustomobject]@{ Name = 'Background'; Path = Join-Path $projectRoot 'tests\Test-Background.ps1'; Arguments = @() },
+        [pscustomobject]@{ Name = 'SelfUpdate'; Path = Join-Path $projectRoot 'tests\Test-SelfUpdate.ps1'; Arguments = @() },
         [pscustomobject]@{ Name = 'UIEvents'; Path = Join-Path $projectRoot 'tests\Test-UIEvents.ps1'; Arguments = @('-EvidenceDirectory', $evidenceRoot) }
     )
     foreach ($suite in $suites) {
@@ -222,7 +223,7 @@ function Invoke-OfflineRunner {
     foreach ($path in $knownEvidence) { Remove-ExactOwnedFile -Path $path -Root $runRoot }
     Remove-EmptyOwnedDirectory -Path $evidenceRoot -Root $runRoot
     Remove-EmptyOwnedDirectory -Path $runRoot -Root $tempRoot
-    Write-Host '[OFFLINE] all five suites passed; tool-owned temporary evidence was cleaned.' -ForegroundColor Green
+    Write-Host '[OFFLINE] all six suites passed; tool-owned temporary evidence was cleaned.' -ForegroundColor Green
     return 0
 }
 

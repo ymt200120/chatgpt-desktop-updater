@@ -197,7 +197,8 @@ function ConvertTo-UbSnapshot {
     param(
         [Parameter(Mandatory = $true)]$Metadata,
         [string]$Architecture,
-        [string]$SHA256
+        [string]$SHA256,
+        [switch]$RequireSHA256
     )
     $version = Get-UbProperty $Metadata 'Version'
     if ($null -eq $version) { throw 'Metadata snapshot has no version.' }
@@ -229,6 +230,7 @@ function ConvertTo-UbSnapshot {
         else { $etagKind = 'Strong' }
     }
     if ($etagKind -notin @('Strong','Weak','Missing')) { throw 'Metadata snapshot has an invalid ETag kind.' }
+    $shaValue = if ([string]::IsNullOrEmpty($SHA256)) { $null } else { $SHA256.ToUpperInvariant() }
     $result = [ordered]@{
         Architecture = $architectureValue
         Version = ConvertTo-UbVersionText $version
@@ -238,9 +240,10 @@ function ConvertTo-UbSnapshot {
         StrongETag = ($etagKind -eq 'Strong')
         Url = if ($null -eq $url) { $null } else { [string]$url }
         FinalUri = if ($null -eq $finalUri) { $null } else { [string]$finalUri }
-        SHA256 = if ($null -eq $SHA256) { $null } else { $SHA256.ToUpperInvariant() }
+        SHA256 = $shaValue
     }
     if ($null -eq $result.Url -or $null -eq $result.FinalUri) { throw 'Metadata snapshot must retain the official URL and final URI.' }
+    if ($RequireSHA256 -and $null -eq $result.SHA256) { throw 'Metadata snapshot requires a computed SHA256 audit value.' }
     if ($null -ne $result.SHA256 -and $result.SHA256 -notmatch '^[0-9A-F]{64}$') { throw 'Metadata snapshot has an invalid SHA256 audit value.' }
     return [pscustomobject]$result
 }
@@ -263,7 +266,7 @@ function Assert-UbCandidate {
     if ($null -eq $Candidate) { throw 'Candidate is missing.' }
     $names = @($Candidate.PSObject.Properties.Name | Sort-Object)
     if ((@($names) -join '|') -ne 'Key|Snapshot|Version') { throw 'Candidate state contains unsupported fields.' }
-    $snapshot = ConvertTo-UbSnapshot -Metadata $Candidate.Snapshot -Architecture (Get-UbProperty $Candidate.Snapshot 'Architecture') -SHA256 (Get-UbProperty $Candidate.Snapshot 'SHA256')
+    $snapshot = ConvertTo-UbSnapshot -Metadata $Candidate.Snapshot -Architecture (Get-UbProperty $Candidate.Snapshot 'Architecture') -SHA256 (Get-UbProperty $Candidate.Snapshot 'SHA256') -RequireSHA256
     $null = ConvertTo-UbKey ([string]$Candidate.Key)
     $version = ConvertTo-UbVersionText $Candidate.Version
     if ($version -ne (ConvertTo-UbVersionText (Get-UbProperty $snapshot 'Version'))) { throw 'Candidate version and snapshot version differ.' }
@@ -380,8 +383,8 @@ function Write-UbPromptStartupMarker {
 }
 
 function ConvertTo-UbMetadataSnapshot {
-    param([Parameter(Mandatory = $true)]$Metadata, [string]$Architecture, [string]$SHA256)
-    return ConvertTo-UbSnapshot -Metadata $Metadata -Architecture $Architecture -SHA256 $SHA256
+    param([Parameter(Mandatory = $true)]$Metadata, [string]$Architecture, [string]$SHA256, [switch]$RequireSHA256)
+    return ConvertTo-UbSnapshot -Metadata $Metadata -Architecture $Architecture -SHA256 $SHA256 -RequireSHA256:$RequireSHA256
 }
 
 function Get-UbCandidateKey {
@@ -401,7 +404,7 @@ function Get-UbCandidateKey {
 function ConvertTo-UbCandidateFromPrepared {
     param([Parameter(Mandatory = $true)]$Prepared, [Parameter(Mandatory = $true)]$Metadata, [Parameter(Mandatory = $true)][string]$Architecture)
     $sha = Get-UbProperty $Prepared 'SHA256'
-    $snapshot = ConvertTo-UbMetadataSnapshot -Metadata $Metadata -Architecture $Architecture -SHA256 ([string]$sha)
+    $snapshot = ConvertTo-UbMetadataSnapshot -Metadata $Metadata -Architecture $Architecture -SHA256 ([string]$sha) -RequireSHA256
     $version = ConvertTo-UbVersionText (Get-UbProperty $Metadata 'Version')
     $key = Get-UbCandidateKey -Prepared $Prepared -Metadata $Metadata -Architecture $Architecture
     return New-UbCandidate -Key $key -Version $version -Snapshot $snapshot
@@ -492,6 +495,15 @@ function Set-UbSnooze {
     param([string]$Root, [datetime]$Now = [datetime]::MinValue, [TimeSpan]$Duration = $script:UbSnoozeInterval)
     $until = (Get-UbNowUtc $Now).Add($Duration).ToString('o')
     return Set-UbStateFields -Root $Root -Changes @{ SnoozeUntil = $until; LastMessage = 'Snoozed' }
+}
+
+function Set-UbDeferred {
+    # A deferred registration is not a completed install.  Keep the candidate
+    # and give the worker a bounded reminder interval so it can observe the
+    # next launch without prompting again immediately.
+    param([string]$Root, [datetime]$Now = [datetime]::MinValue, [TimeSpan]$Duration = $script:UbSnoozeInterval)
+    $until = (Get-UbNowUtc $Now).Add($Duration).ToString('o')
+    return Set-UbStateFields -Root $Root -Changes @{ SnoozeUntil = $until; LastMessage = 'Deferred' }
 }
 
 function Clear-UbCandidate {

@@ -16,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $EvidenceDirectory = Joi
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'update-chatgpt.ps1')
 
 # An extra guard: even an accidental call across the deployment boundary fails.
-function Install-UtPackage { param([string]$Path) throw 'Live cache acceptance MUST NOT deploy.' }
+function Install-UtPackage { param([string]$Path, [switch]$DeferRegistration) throw 'Live cache acceptance MUST NOT deploy.' }
 
 # Reverification after the one permitted full download must fail instead of
 # silently downloading another package if the cache or HEAD snapshot changes.

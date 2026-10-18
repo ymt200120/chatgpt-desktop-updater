@@ -152,11 +152,26 @@ function Invoke-UbBackgroundWorker {
     $nowValue = Get-UbNowUtc $WorkerNow
     try {
         $state = Get-UbWorkerState -Root $root
+        $candidate = Get-UbProperty $state 'Candidate'
+        if ($null -ne $candidate -and [string](Get-UbProperty $state 'LastMessage') -eq 'Deferred') {
+            # The previous confirmed install succeeded but Windows deferred the
+            # registration because the package was in use.  Observe the next
+            # launch even when the seven-day HEAD interval is not due.
+            try {
+                $deferredInstalled = Get-UbWorkerInstalled
+                if ($null -ne $deferredInstalled -and (Compare-UtVersion -A $deferredInstalled.Version -B ([version]$candidate.Version)) -ge 0) {
+                    $null = Clear-UbCandidate -Root $root -Message 'Deferred update completed; installed package is current.'
+                    Write-UbLog -Root $root -Message ("Deferred update completed; registered version {0}." -f $deferredInstalled.Version)
+                    return [pscustomobject]@{ Status = 'AlreadyCurrent'; Code = 0; Message = 'Deferred update completed; installed package is current.'; Version = $deferredInstalled.Version }
+                }
+            } catch {
+                Write-UbLog -Root $root -Message ('Deferred registration verification query failed; candidate retained: ' + $_.Exception.Message)
+            }
+        }
         if ($WorkerMode -eq 'Remind') {
             return Invoke-UbPromptIfDue -State $state -Root $root -TestMode:$WorkerTestMode -PromptChoice $WorkerPromptChoice -NoPrompt:$WorkerNoPrompt -PromptNow $nowValue
         }
 
-        $candidate = Get-UbProperty $state 'Candidate'
         if ($null -ne $candidate -and $WorkerMode -eq 'Run' -and -not (Test-UbDueForCheck -State $state -Now $nowValue)) {
             return Invoke-UbPromptIfDue -State $state -Root $root -TestMode:$WorkerTestMode -PromptChoice $WorkerPromptChoice -NoPrompt:$WorkerNoPrompt -PromptNow $nowValue
         }

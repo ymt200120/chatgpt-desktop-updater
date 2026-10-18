@@ -42,6 +42,42 @@ function New-TestCandidate {
     return New-UbCandidate -Key ('x64-' + ($Version -replace '\.','-') + '-4096') -Version $Version -Snapshot $snapshot
 }
 
+Invoke-Case 'HEAD metadata snapshots normalize optional SHA256 audit values' {
+    $metadata = New-TestMetadata
+    $omitted = ConvertTo-UbMetadataSnapshot -Metadata $metadata -Architecture x64
+    $explicitNull = ConvertTo-UbMetadataSnapshot -Metadata $metadata -Architecture x64 -SHA256 $null
+    $empty = ConvertTo-UbMetadataSnapshot -Metadata $metadata -Architecture x64 -SHA256 ''
+    foreach ($snapshot in @($omitted, $explicitNull, $empty)) {
+        Assert-True ($null -eq (Get-UbProperty $snapshot 'SHA256')) 'omitted, null, and empty SHA256 values normalize to null'
+    }
+
+    $lower = ConvertTo-UbMetadataSnapshot -Metadata $metadata -Architecture x64 -SHA256 ('ab' * 32)
+    Assert-Equal ('AB' * 32) $lower.SHA256 'valid SHA256 values are normalized to uppercase'
+
+    foreach ($invalid in @(' ', 'not-a-hash', ('A' * 63), ('G' * 64))) {
+        $rejected = $false
+        try { $null = ConvertTo-UbMetadataSnapshot -Metadata $metadata -Architecture x64 -SHA256 $invalid } catch { $rejected = $true }
+        Assert-True $rejected ("nonempty invalid SHA256 value '{0}' is rejected" -f $invalid)
+    }
+}
+
+Invoke-Case 'Ready candidate parsing and publication require a computed SHA256 audit value' {
+    foreach ($invalid in @($null, '', 'not-a-hash', ('A' * 63), ('G' * 64))) {
+        $snapshot = ConvertTo-UbMetadataSnapshot -Metadata (New-TestMetadata) -Architecture x64 -SHA256 ('A' * 64)
+        $snapshot.SHA256 = $invalid
+        $candidate = New-UbCandidate -Key 'x64-26-930-7945-0-4096' -Version '26.930.7945.0' -Snapshot $snapshot
+        $rejected = $false
+        try { $null = Assert-UbCandidate $candidate } catch { $rejected = $true }
+        Assert-True $rejected ("stored candidate SHA256 value '{0}' is rejected" -f $invalid)
+    }
+
+    $missingSnapshot = ConvertTo-UbMetadataSnapshot -Metadata (New-TestMetadata) -Architecture x64
+    $missingCandidate = New-UbCandidate -Key 'x64-26-930-7945-0-4096' -Version '26.930.7945.0' -Snapshot $missingSnapshot
+    $publishRejected = $false
+    try { $null = Set-UbCandidate -Root (Join-Path $script:FixtureRoot 'candidate-missing-sha') -Candidate $missingCandidate } catch { $publishRejected = $true }
+    Assert-True $publishRejected 'candidate publication rejects a snapshot without a computed SHA256 value'
+}
+
 Invoke-Case 'state is atomic, versioned, and stores no trusted path' {
     $root = Join-Path $script:FixtureRoot 'state atomic'
     $candidate = New-TestCandidate
@@ -133,7 +169,7 @@ function Get-UtPreparedCandidate {
 }
 function Test-UtSnapshotMatch { param($A,$B) return ([string]$A.Version -eq [string]$B.Version -and [string]$A.ETag -eq [string]$B.ETag) }
 
-Invoke-Case 'seven-day check prepares once and does not install' {
+Invoke-Case 'seven-day check prepares once and HEAD recheck retains a matching Ready candidate' {
     $root = Join-Path $script:FixtureRoot 'worker-seven-day'
     $now = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
     $result = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerConnections 8 -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $now
@@ -145,6 +181,10 @@ Invoke-Case 'seven-day check prepares once and does not install' {
     $result2 = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerConnections 8 -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $now.AddDays(6)
     Assert-Equal 'Ready' $result2.Status 'matching ready candidate remains quiet'
     Assert-Equal $headBefore $script:HeadCalls 'daily trigger does not issue a second HEAD before seven days'
+    $recheck = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerConnections 8 -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $now.AddDays(7)
+    Assert-Equal 'Ready' $recheck.Status 'HEAD-only recheck retains the matching ready candidate'
+    Assert-Equal ($headBefore + 1) $script:HeadCalls 'seven-day recheck issues one HEAD'
+    Assert-Equal 1 $script:PrepareCalls 'matching HEAD recheck does not prepare a second candidate'
 }
 
 Invoke-Case 'HEAD success and prepare failure retain separate retry clocks' {
@@ -184,6 +224,22 @@ Invoke-Case 'successful already-current HEAD clears a stale prepare retry clock'
     $nextDay = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddDays(1)
     Assert-Equal 'NotDue' $nextDay.Status 'next day remains inside seven-day HEAD interval'
     Assert-Equal ($headBefore + 1) $script:HeadCalls 'next day does not issue a second HEAD'
+    $script:MockInstalledVersion = '26.707.3748.0'
+}
+
+Invoke-Case 'deferred registration is observed on the next worker run even before the HEAD interval' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $candidate = New-TestCandidate
+    Set-UbCandidate -Root $root -Candidate $candidate -Now $clock | Out-Null
+    Set-UbHeadSuccess -Root $root -Now $clock | Out-Null
+    Set-UbDeferred -Root $root -Now $clock | Out-Null
+    $script:MockInstalledVersion = '26.930.7945.0'
+    $headBefore = $script:HeadCalls
+    $result = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(1)
+    Assert-Equal 'AlreadyCurrent' $result.Status 'deferred registration that completed is recognized without a new HEAD'
+    Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'completed deferred candidate is cleared'
+    Assert-Equal $headBefore $script:HeadCalls 'deferred completion check does not issue a HEAD'
     $script:MockInstalledVersion = '26.707.3748.0'
 }
 
@@ -266,16 +322,16 @@ Invoke-Case 'candidate change, install failure, and duplicate prompt lock are fa
 }
 
 Invoke-Case 'async confirmation runspace reaches every isolated mock result' {
-    foreach ($mockResult in @('Success','D02','Changed')) {
+    foreach ($mockResult in @('Success','Deferred','D02','Changed')) {
         $root = Join-Path $script:FixtureRoot ('runspace-' + $mockResult)
-        $candidate = New-TestCandidate -Version ('26.930.7945.' + $(if ($mockResult -eq 'Success') { '0' } elseif ($mockResult -eq 'D02') { '1' } else { '2' })) -ETag ('"' + $mockResult + '"')
+        $candidate = New-TestCandidate -Version ('26.930.7945.' + $(if ($mockResult -eq 'Success') { '0' } elseif ($mockResult -eq 'Deferred') { '3' } elseif ($mockResult -eq 'D02') { '1' } else { '2' })) -ETag ('"' + $mockResult + '"')
         Set-UbCandidate -Root $root -Candidate $candidate | Out-Null
         $operation = $null
         try {
             $operation = Start-UbInstallRunspace -Core (Join-Path $script:ProjectRoot 'update-chatgpt.ps1') -Key $candidate.Key -Version $candidate.Version -Mock -MockResult $mockResult
             $output = $operation.PowerShell.EndInvoke($operation.Async)
             $result = @($output) | Select-Object -Last 1
-            $expectedStatus = if ($mockResult -eq 'Success') { 'Installed' } elseif ($mockResult -eq 'D02') { 'Failed' } else { 'CandidateChanged' }
+            $expectedStatus = if ($mockResult -eq 'Success') { 'Installed' } elseif ($mockResult -eq 'Deferred') { 'Deferred' } elseif ($mockResult -eq 'D02') { 'Failed' } else { 'CandidateChanged' }
             Assert-Equal $expectedStatus $result.Status ("async {0} status" -f $mockResult)
         } finally {
             if ($null -ne $operation) { $operation.PowerShell.Dispose(); $operation.Runspace.Dispose() }

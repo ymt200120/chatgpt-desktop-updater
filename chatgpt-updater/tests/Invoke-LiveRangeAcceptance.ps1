@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $EvidenceDirectory = Join-Path $PSScriptRoot 'evidence\segmented-background' }
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'update-chatgpt.ps1')
-function Install-UtPackage { param([string]$Path) throw 'Live range acceptance MUST NOT deploy.' }
+function Install-UtPackage { param([string]$Path, [switch]$DeferRegistration) throw 'Live range acceptance MUST NOT deploy.' }
 $architecture = Get-UtNativeArchitecture
 $url = '{0}/ChatGPT-{1}.msix' -f $script:UtBaseUrl,$architecture
 $metadata = Get-UtRemoteMetadata -HeadResult (Invoke-UtHeadRequest -Uri $url) -Architecture $architecture -RequestedUri $url

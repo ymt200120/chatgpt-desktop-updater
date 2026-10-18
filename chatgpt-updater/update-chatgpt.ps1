@@ -54,6 +54,34 @@ $script:UtCacheSchemaVersion = 1
 $script:UtCacheMaxStateBytes = 65536
 $script:UtMaxManagedPackages = 3
 
+# Updater self-update identity.  The manifest and archive are pinned to the
+# public repository; the archive and every staged file are SHA-256 checked.
+# This release does not embed a separate signing key, so the trust root is the
+# pinned GitHub repository account over HTTPS and the user's explicit -Apply.
+$script:UtUpdaterProduct = 'chatgpt-desktop-updater'
+$script:UtUpdaterRepository = 'ymt200120/chatgpt-desktop-updater-public'
+$script:UtUpdaterManifestUrl = 'https://github.com/ymt200120/chatgpt-desktop-updater-public/releases/latest/download/updater-release.json'
+$script:UtUpdaterReleasePrefix = 'https://github.com/ymt200120/chatgpt-desktop-updater-public/releases/download/'
+$script:UtUpdaterVersionFile = 'VERSION'
+$script:UtUpdaterFiles = @(
+    'update-chatgpt.ps1',
+    'update-chatgpt.cmd',
+    'background-common.ps1',
+    'segmented-download.ps1',
+    'managed-cache.ps1',
+    'background-worker.ps1',
+    'background-worker.cmd',
+    'confirm-install.ps1',
+    'manage-background.ps1',
+    'manage-background.cmd',
+    'self-update.ps1',
+    'self-update-helper.ps1',
+    'update-updater.cmd',
+    'VERSION'
+)
+$script:UtSelfUpdateMaxManifestBytes = 65536
+$script:UtSelfUpdateMaxArchiveBytes = 8388608
+
 # Exit codes.
 $script:UtExitOk            = 0
 $script:UtExitInternal      = 1
@@ -69,6 +97,7 @@ $script:UtExitDeployment    = 10
 $script:UtExitVerify        = 11
 $script:UtExitLock          = 12
 $script:UtExitInstalled     = 13
+$script:UtExitDeferred      = 14
 
 # ---------------------------------------------------------------------------
 # Errors / output helpers.
@@ -250,8 +279,23 @@ function Get-UtInstalledPackage {
 }
 
 function Install-UtPackage {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    Add-AppxPackage -Path $Path -ErrorAction Stop
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$DeferRegistration
+    )
+    $parameters = @{ Path = $Path; ErrorAction = 'Stop' }
+    # A packaged Windows service can keep the old package active even when no
+    # ChatGPT window is open.  Windows can stage the update now and register it
+    # when the package is next launched.  This is the non-destructive path: it
+    # neither terminates processes nor stops services.  Older systems without
+    # the parameter fall back to the normal registration attempt.
+    if ($DeferRegistration) {
+        $command = Get-Command Add-AppxPackage -ErrorAction Stop
+        if ($command.Parameters.ContainsKey('DeferRegistrationWhenPackagesAreInUse')) {
+            $parameters['DeferRegistrationWhenPackagesAreInUse'] = $true
+        }
+    }
+    Add-AppxPackage @parameters
 }
 
 function Start-UtApp {
@@ -1141,7 +1185,7 @@ function Write-UtDeploymentFailure {
     param($ErrorRecord)
     $text = ($ErrorRecord | Out-String)
     Write-UtError ("Deployment error: {0}" -f $ErrorRecord.Exception.Message)
-    if ($text -match '0x80073D02') { Write-UtError '0x80073D02: save your work and close ChatGPT normally, then re-run. This updater will not terminate processes.' }
+    if ($text -match '0x80073D02') { Write-UtError '0x80073D02: package resources are in use. A background service may still hold them even when no ChatGPT window is open. The updater requested deferred registration where supported, but Windows still rejected this attempt. The update is incomplete; the cached package was retained. Restart Windows and run the updater again. See background.log for details. This updater will not terminate processes or stop services.' }
     if ($text -match '0x80073D06') { Write-UtError '0x80073D06: a higher version is already installed; no downgrade was attempted.' }
     if ($text -match '0x80073D28') { Write-UtError '0x80073D28: a packaged service requires administrator rights. This updater will not self-elevate or switch to provisioning.' }
     if ($text -match '0x80070005' -or $text -match 'Access is denied') { Write-UtError 'Access denied. This updater will not change permissions, policy or service settings.' }
@@ -1321,10 +1365,13 @@ function Invoke-UtUpdater {
         if ($null -eq $installResult) {
             Stop-Ut $script:UtExitInternal 'The confirmation window returned no result; installation was not attempted.'
         }
-        if ($installResult.Status -eq 'Installed' -or $installResult.Status -eq 'AlreadyCurrent' -or $installResult.Status -eq 'Prompted') {
+        if ($installResult.Status -eq 'Installed' -or $installResult.Status -eq 'AlreadyCurrent' -or $installResult.Status -eq 'Deferred' -or $installResult.Status -eq 'Prompted') {
             Write-UtLine $installResult.Message
         } else {
             Write-UtError $installResult.Message
+        }
+        if ($installResult.Status -eq 'Deferred') {
+            Write-UtLine 'The update was staged for deferred registration. No restart or service stop was attempted.'
         }
         if ($installResult.Status -eq 'Installed') {
             Write-UtLine 'Open the app to confirm sign-in and UI behavior; package registration does not prove those.'
@@ -1356,6 +1403,11 @@ if (Test-Path -LiteralPath $segmentedDownloadPath -PathType Leaf) { . $segmented
 # Dot-sourcing must only define the functions above; only a direct invocation
 # starts the real updater and returns its exit code.
 if ($MyInvocation.InvocationName -ne '.') {
+    $selfUpdatePending = Join-Path $PSScriptRoot 'self-update.pending.json'
+    if (Test-Path -LiteralPath $selfUpdatePending -PathType Leaf) {
+        Write-UtError 'A self-update activation is pending or incomplete. Wait for the helper to finish, then run update-updater.cmd -Status.'
+        exit $script:UtExitLock
+    }
     $exitCode = Invoke-UtUpdater @PSBoundParameters
     exit ([int]$exitCode)
 }

@@ -5,7 +5,9 @@ Windows 11 x64 上实际验证；代码包含 x64 和 arm64 路径，但 ARM64 �
 硬件部署没有验证或保证。真实桌面鼠标、焦点验收仍不完整，这些模块也没有新做真实
 AppX 部署。工具不会改变 ChatGPT 内置更新策略或 Microsoft Store 更新策略。它只从
 OpenAI 官方地址下载签名包，不使用 Microsoft Store、`winget msstore`、
-第三方镜像，也不会自动更新 updater 自身的脚本。
+第三方镜像。更新器自身更新必须显式运行 `update-updater.cmd -Apply`；它不会在
+后台静默替换脚本。更新包和每个生产文件都经过 SHA-256 校验，先暂存，当前进程
+退出后由独立 helper 替换，并保留可回滚备份。
 
 - x64：`https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix`
 - arm64：`https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix`
@@ -58,7 +60,7 @@ update-chatgpt.cmd -OpenApp
 4. 同一范围的临时网络故障最多重试一次，从零重写该段；重定向、错误 `206`、错误 `Content-Range`/ETag、对象变化、`412` 等语义错误立即停止，不盲目重试。
 5. 文件写入本工具自己的 `%LOCALAPPDATA%\ChatGPTUpdater\<run>`，先写 `.partial`，长度和验证通过后才改名。旧 partial、分段文件和不完整下载不会被续用。
 6. 对同一个完整文件执行 Authenticode、Manifest、Name、Publisher、架构、版本、Windows 兼容性和依赖检查，并计算 SHA256 审计值。
-7. 安装前再次获得 `update.lock`，重查当前版本和 HEAD，重新选择并完整验证缓存文件，持有同一文件的 read lease 到部署后；部署后再次核验 Family、版本和 `Status=Ok`。
+7. 安装前再次获得 `update.lock`，重查当前版本和 HEAD，重新选择并完整验证缓存文件，持有同一文件的 read lease 到部署后；部署请求使用 Windows 的延迟注册（包被占用时不强关应用/服务），部署后再次核验 Family、版本和 `Status=Ok`。如果注册被合法延迟，返回独立的 Deferred 状态并保留候选，不把它报告为已安装。
 
 ## 完整包缓存
 
@@ -78,13 +80,13 @@ manage-background.cmd -Disable
 manage-background.cmd -Remove
 ```
 
-`-Install` 只把明确列出的生产模块复制到 `%LOCALAPPDATA%\Programs\ChatGPTUpdater`，并创建当前用户 SID 的 `ChatGPTUpdater-Background` 任务。任务使用 Interactive/Limited，不保存密码，要求用户已登录，不建立服务、常驻进程、托盘或开始菜单入口。首次安装和 `-Enable` 会立即启动一次准备流程；它不会直接安装 AppX。
+`-Install` 只把明确列出的生产模块复制到 `%LOCALAPPDATA%\Programs\ChatGPTUpdater`，并创建当前用户 SID 的 `ChatGPTUpdater-Background` 任务。当前清单为 14 个文件，包含 `VERSION`、`self-update.ps1`、`self-update-helper.ps1` 和 `update-updater.cmd`。任务使用 Interactive/Limited，不保存密码，要求用户已登录，不建立服务、常驻进程、托盘或开始菜单入口。首次安装和 `-Enable` 会立即启动一次准备流程；它不会直接安装 AppX。
 
 任务在当地每天 12:00 和该 SID 登录时触发，`StartWhenAvailable`、`MultipleInstances=IgnoreNew`，允许电池启动且不因切换电池停止，不唤醒机器，任务执行时间限制为 `PT0S`。任务只覆盖带有本工具 marker、当前 SID、精确 PowerShell 路径、参数和工作目录的自有任务；名称冲突、查询权限错误或其他归属不明情况会停止，不会提权或强行覆盖。
 
 健康状态下远端 HEAD 最多每 7 天一次；首次启用可立即检查。HEAD 成功和准备成功分开记录，准备失败按至少 6 小时重试，不把一次 HEAD 成功错误地延长为一周。Ready 候选只在提醒到期且桌面已解锁时弹窗；锁屏、不可见桌面或启动失败时保留 Ready，后续触发再尝试。状态、日志和候选有界、带版本并使用独立的状态、提示、日志锁；损坏状态会隔离后从空状态恢复，不触碰缓存。
 
-确认窗口是普通 Windows Forms 对话框：显示当前实际版本和候选版本，安装按钮是唯一授权入口。窗口不置顶、不调用 Activate/SetForegroundWindow，并请求 `ShowWithoutActivation`；这不能保证所有桌面策略下都不改变焦点。Enter 被显式拦截，未设置默认 AcceptButton，用户主动点击仍可正常操作。等待最多 10 分钟，无人回应、`稍后`、X、Escape 都保存至少 24 小时 snooze、保留包且绝不安装。安装在独立 runspace 中进行，窗口保持响应；安装进度窗口关闭只隐藏窗口，不终止部署。`0x80073D02` 会提示正常退出 ChatGPT 后重试，不强杀进程、不重新下载。
+确认窗口是普通 Windows Forms 对话框：显示当前实际版本和候选版本，安装按钮是唯一授权入口。窗口不置顶、不调用 Activate/SetForegroundWindow，并请求 `ShowWithoutActivation`；这不能保证所有桌面策略下都不改变焦点。Enter 被显式拦截，未设置默认 AcceptButton，用户主动点击仍可正常操作。等待最多 10 分钟，无人回应、`稍后`、X、Escape 都保存至少 24 小时 snooze、保留包且绝不安装。安装在独立 runspace 中进行，窗口保持响应；安装进度窗口关闭只隐藏窗口，不终止部署。安装请求 `DeferRegistrationWhenPackagesAreInUse`；如果 ChatGPT 或其后台服务占用应用包，更新会暂存并在下次启动时注册，不强制关闭应用或停止服务。`0x80073D02` 仍表示资源占用；完整错误保存在 `background.log`。更新未完成时保留候选，不强杀进程、不停止服务、不重新下载。
 
 测试 UI 使用隔离 TEMP 状态和 `TEST/MOCK` 标题，永远不会触及生产状态或 AppX：
 
@@ -95,6 +97,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\confirm-install.p
 ```
 
 需要快速无人值守演示时加 `-TimeoutSeconds 5`。真实安装永远由用户本人点击 `立即安装`，不会为了验收自动点击或伪造授权。
+
+## 更新器自身更新
+
+在部署目录 `%LOCALAPPDATA%\Programs\ChatGPTUpdater` 中显式运行：
+
+```bat
+update-updater.cmd -CheckOnly
+update-updater.cmd -Status
+update-updater.cmd -Apply
+update-updater.cmd -Rollback
+```
+
+- `-CheckOnly` 只读取固定 GitHub Release 的 `updater-release.json` 并比较版本，不下载生产 ZIP、不替换文件。
+- `-Apply` 是替换更新器自身代码的唯一显式授权。它下载 ZIP，校验 ZIP 和每个文件的 SHA-256，检查 `VERSION`、文件清单和 PowerShell 语法，然后暂存。后台任务会暂停；当前进程退出后，独立的 `self-update-helper.ps1` 才替换文件并重新启用任务。
+- 替换前会把旧文件备份到 `%LOCALAPPDATA%\ChatGPTUpdater\updater\backups\`；`-Rollback` 可恢复最近一次备份。
+- 替换期间会在部署目录写入 `self-update.pending.json`；直接运行 `update-chatgpt.ps1` 会以退出码 `12` 拒绝并发启动。
+- 后台任务只会准备 ChatGPT 更新，不会调用 `-Apply`，不会静默更新自身。
+
+信任边界：清单 URL 固定在 `https://github.com/ymt200120/chatgpt-desktop-updater-public`，ZIP 和文件哈希也来自该 Release。当前版本没有额外的发布签名密钥，因此信任根是该 GitHub 仓库账号、HTTPS 和用户显式 `-Apply`；仓库账号或本机被控制不在防护范围内。发布新版本可使用 `scripts\New-UpdaterRelease.ps1` 生成 `updater-release.json` 和生产 ZIP。
+
+自更新退出码：`0` 成功/已是最新/仅检查；`1` 未预期错误；`2` 参数冲突；`3` 环境或非部署目录；`4` 网络；`5` 清单；`6` ZIP/文件一致性；`7` 安全校验；`8` 正在运行、已有 pending 或锁冲突。
 
 ## 关机、恢复与限制
 
@@ -107,9 +130,9 @@ HTTP 版本、长度和 ETag 只是传输一致性信号，不是信任根。官
 
 ## 退出码
 
-`0` 成功、无需更新、成功验证或成功安装；`1` 未预期错误；`2` 参数冲突；`3` 环境；`4` 网络；`5` 元数据；`6` 下载/一致性；`7` 安全/身份/Manifest；`8` Windows 兼容性；`9` 依赖；`10` 部署；`11` 安装后核验；`12` 锁冲突；`13` 已安装包状态。
+`0` 成功、无需更新、成功验证或成功安装；`1` 未预期错误；`2` 参数冲突；`3` 环境；`4` 网络；`5` 元数据；`6` 下载/一致性；`7` 安全/身份/Manifest；`8` Windows 兼容性；`9` 依赖；`10` 部署；`11` 安装后核验；`12` 锁冲突；`13` 已安装包状态；`14` 已暂存但注册被延迟（等待下次启动，不代表已安装）。
 
-常见部署错误：`0x80073D02` 要求正常退出 ChatGPT；`0x80073D06` 表示已有更高版本；`0x80073D28` 表示需要管理员权限。工具不会通过强杀、提权或 provisioning 绕过这些错误。
+常见部署错误：`0x80073D02` 表示应用包资源被占用，后台服务也可能造成占用，不表示用户一定打开过窗口；`0x80073D06` 表示已有更高版本；`0x80073D28` 表示需要管理员权限。官方应用包可能包含自动启动的系统服务，因此仅退出窗口或重启电脑未必能解除占用。更新器会先请求延迟注册；如果 Windows 仍拒绝，候选包会保留，重启 Windows 后可再次运行更新器。工具不会通过强杀、停止服务、提权或 provisioning 绕过这些错误。
 
 ## 离线测试与真实验收
 
@@ -120,6 +143,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Updater.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Background.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Cache.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-SegmentedDownload.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-SelfUpdate.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\tests\Test-UIEvents.ps1
 ```
 
