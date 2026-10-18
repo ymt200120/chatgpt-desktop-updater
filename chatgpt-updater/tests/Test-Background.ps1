@@ -153,10 +153,11 @@ $script:PrepareCalls = 0
 $script:UpdateLockCalls = 0
 $script:MockPrepareFailure = $false
 $script:MockInstalledVersion = '26.707.3748.0'
+$script:MockInstalledStatus = 'Ok'
 $script:MockArchitectureFailure = $false
 function Get-UtNativeArchitecture { if ($script:MockArchitectureFailure) { throw 'mock architecture query failure' }; return 'x64' }
 function Get-UtWindowsVersion { return [version]'10.0.26100.1' }
-function Get-UtInstalledPackage { return [pscustomobject]@{ Version = [version]$script:MockInstalledVersion; Status = 'Ok'; PackageFamilyName = 'OpenAI.Codex_2p2nqsd0c76g0' } }
+function Get-UtInstalledPackage { return [pscustomobject]@{ Version = [version]$script:MockInstalledVersion; Status = $script:MockInstalledStatus; PackageFamilyName = 'OpenAI.Codex_2p2nqsd0c76g0' } }
 function Invoke-UtHeadRequest { $script:HeadCalls++; return [pscustomobject]@{ Mock = $true } }
 function Get-UtRemoteMetadata { return (New-TestMetadata) }
 function Enter-UtLock { $script:UpdateLockCalls++; return (New-Object IO.MemoryStream) }
@@ -240,6 +241,117 @@ Invoke-Case 'deferred registration is observed on the next worker run even befor
     Assert-Equal 'AlreadyCurrent' $result.Status 'deferred registration that completed is recognized without a new HEAD'
     Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'completed deferred candidate is cleared'
     Assert-Equal $headBefore $script:HeadCalls 'deferred completion check does not issue a HEAD'
+    $script:MockInstalledVersion = '26.707.3748.0'
+}
+
+Invoke-Case 'deferred marker survives Later and observes completion before HEAD is due' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred-later'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $candidate = New-TestCandidate
+    Set-UbCandidate -Root $root -Candidate $candidate -Now $clock | Out-Null
+    Set-UbHeadSuccess -Root $root -Now $clock | Out-Null
+    Set-UbDeferred -Root $root -Now $clock | Out-Null
+    $script:MockInstalledVersion = '26.707.3748.0'
+    $script:MockInstalledStatus = 'Ok'
+
+    $later = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerTestMode -WorkerPromptChoice Later -WorkerNow $clock.AddHours(24)
+    Assert-Equal 'Snoozed' $later.Status 'Later remains a non-install decision after deferred registration'
+    $afterLater = Read-UbState -Root $root
+    Assert-Equal $candidate.Key $afterLater.DeferredCandidateKey 'Later preserves the candidate-bound deferred marker'
+    Assert-Equal 'Snoozed' $afterLater.LastMessage 'Later may update display text without changing deferred phase'
+
+    $script:MockInstalledVersion = $candidate.Version
+    $headBefore = $script:HeadCalls
+    $completed = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(49)
+    Assert-Equal 'AlreadyCurrent' $completed.Status 'completion after Later is observed without a prompt'
+    Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'completion after Later clears the candidate'
+    Assert-Equal $headBefore $script:HeadCalls 'completion after Later does not issue a HEAD request'
+    $script:MockInstalledVersion = '26.707.3748.0'
+}
+
+Invoke-Case 'deferred marker survives failure and observes completion before HEAD is due' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred-failure'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $candidate = New-TestCandidate
+    Set-UbCandidate -Root $root -Candidate $candidate -Now $clock | Out-Null
+    Set-UbHeadSuccess -Root $root -Now $clock | Out-Null
+    Set-UbDeferred -Root $root -Now $clock | Out-Null
+    Set-UbFailure -Root $root -Now $clock -Message 'mock deferred verification failure' | Out-Null
+    $afterFailure = Read-UbState -Root $root
+    Assert-Equal $candidate.Key $afterFailure.DeferredCandidateKey 'failure preserves the candidate-bound deferred marker'
+    Assert-Equal 'mock deferred verification failure' $afterFailure.LastMessage 'failure still records its diagnostic message'
+
+    $script:MockInstalledVersion = $candidate.Version
+    $script:MockInstalledStatus = 'Ok'
+    $headBefore = $script:HeadCalls
+    $completed = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(7)
+    Assert-Equal 'AlreadyCurrent' $completed.Status 'completion after failure is observed without a prompt'
+    Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'completion after failure clears the candidate'
+    Assert-Equal $headBefore $script:HeadCalls 'completion after failure does not issue a HEAD request'
+    $script:MockInstalledVersion = '26.707.3748.0'
+}
+
+Invoke-Case 'servicing or incomplete registration remains pending until status is Ok' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred-servicing'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $candidate = New-TestCandidate
+    Set-UbCandidate -Root $root -Candidate $candidate -Now $clock | Out-Null
+    Set-UbHeadSuccess -Root $root -Now $clock | Out-Null
+    Set-UbDeferred -Root $root -Now $clock | Out-Null
+    $script:MockInstalledVersion = $candidate.Version
+    $script:MockInstalledStatus = 'Servicing'
+    $headBefore = $script:HeadCalls
+    $pending = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(1)
+    Assert-True ($pending.Status -ne 'AlreadyCurrent') 'Servicing status is not reported as a completed installation'
+    $pendingState = Read-UbState -Root $root
+    Assert-Equal $candidate.Key $pendingState.DeferredCandidateKey 'Servicing status retains the deferred marker'
+    Assert-True ($null -ne $pendingState.Candidate) 'Servicing status retains the candidate'
+    Assert-Equal $headBefore $script:HeadCalls 'Servicing verification does not issue a HEAD request'
+
+    $script:MockInstalledStatus = 'Ok'
+    $completed = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(2)
+    Assert-Equal 'AlreadyCurrent' $completed.Status 'an Ok status completes the deferred registration'
+    Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'an Ok status clears the completed candidate'
+    $script:MockInstalledVersion = '26.707.3748.0'
+}
+
+Invoke-Case 'replacing a candidate clears its deferred marker' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred-replacement'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $first = New-TestCandidate
+    $second = New-TestCandidate -Version '26.930.7945.1' -ETag '"next"'
+    Set-UbCandidate -Root $root -Candidate $first -Now $clock | Out-Null
+    Set-UbDeferred -Root $root -Now $clock | Out-Null
+    Set-UbCandidate -Root $root -Candidate $second -Now $clock.AddHours(1) | Out-Null
+    $state = Read-UbState -Root $root
+    Assert-Equal $second.Key $state.Candidate.Key 'replacement publishes the new candidate'
+    Assert-True ([string]::IsNullOrWhiteSpace([string]$state.DeferredCandidateKey)) 'replacement clears the previous deferred marker'
+}
+
+Invoke-Case 'legacy LastMessage Deferred state migrates only to its stored candidate' {
+    $root = Join-Path $script:FixtureRoot 'worker-deferred-legacy'
+    $clock = ([datetime]'2026-10-07T00:00:00Z').ToUniversalTime()
+    $candidate = New-TestCandidate
+    $legacy = [ordered]@{
+        Schema = 1
+        LastSuccessfulCheck = $clock.ToString('o')
+        LastCheckAttempt = $clock.ToString('o')
+        LastPrepareSuccess = $clock.ToString('o')
+        Candidate = $candidate
+        SnoozeUntil = $clock.AddHours(1).ToString('o')
+        LastFailure = $null
+        NextRetryAt = $null
+        LastMessage = 'Deferred'
+    }
+    Write-UbAtomicText -Path (Get-UbStatePath $root) -Text ($legacy | ConvertTo-Json -Depth 8 -Compress)
+    $migrated = Read-UbState -Root $root
+    Assert-Equal $candidate.Key $migrated.DeferredCandidateKey 'legacy deferred text migrates to the persisted candidate key'
+
+    $script:MockInstalledVersion = $candidate.Version
+    $script:MockInstalledStatus = 'Ok'
+    $completed = Invoke-UbBackgroundWorker -WorkerMode Run -WorkerStateRoot $root -WorkerNoPrompt -WorkerNow $clock.AddHours(1)
+    Assert-Equal 'AlreadyCurrent' $completed.Status 'legacy deferred state still observes registration completion'
+    Assert-True ($null -eq (Read-UbState -Root $root).Candidate) 'legacy completion clears the candidate'
     $script:MockInstalledVersion = '26.707.3748.0'
 }
 

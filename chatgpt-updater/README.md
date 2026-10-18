@@ -111,9 +111,19 @@ update-updater.cmd -Rollback
 
 - `-CheckOnly` 只读取固定 GitHub Release 的 `updater-release.json` 并比较版本，不下载生产 ZIP、不替换文件。
 - `-Apply` 是替换更新器自身代码的唯一显式授权。它下载 ZIP，校验 ZIP 和每个文件的 SHA-256，检查 `VERSION`、文件清单和 PowerShell 语法，然后暂存。后台任务会暂停；当前进程退出后，独立的 `self-update-helper.ps1` 才替换文件并重新启用任务。
-- 替换前会把旧文件备份到 `%LOCALAPPDATA%\ChatGPTUpdater\updater\backups\`；`-Rollback` 可恢复最近一次备份。
-- 替换期间会在部署目录写入 `self-update.pending.json`；直接运行 `update-chatgpt.ps1` 会以退出码 `12` 拒绝并发启动。
+- 替换任何文件前，先把旧文件完整备份到 `%LOCALAPPDATA%\ChatGPTUpdater\updater\backups\` 并验证 SHA-256，持久化可恢复状态。`-Rollback` 优先处理当前中断事务，没有 pending 时选择最近的恢复记录；损坏或缺少完整性信息的旧备份会被拒绝。
+- 事务使用持久化身份和取消状态；`-Rollback` 可取消尚未激活的事务，等待中的 helper 不会再激活该事务。回滚部分失败时保留恢复状态，可在原因解除后重试。
+- 替换期间会在部署目录写入 `self-update.pending.json`；普通更新在取得共同的 `update.lock` 后再次检查 pending，并以退出码 `12` 拒绝并发启动。自更新不会删除正在使用的锁文件。
+- 后台任务查询错误会阻止激活；任务恢复或 pending 清除失败会报告 `RecoveryRequired`，不能当作完整成功。原先已禁用的任务保持禁用。
 - 后台任务只会准备 ChatGPT 更新，不会调用 `-Apply`，不会静默更新自身。
+
+如果升级中断后部署目录中的脚本仍是旧版或无法正常加载，可以使用独立保存的 helper 恢复，不需要重新下载或加载损坏的部署脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<保存的 helper 路径>" -PlanPath "<对应事务计划路径>" -Recover
+```
+
+计划保存在 `%LOCALAPPDATA%\ChatGPTUpdater\updater\plans\<id>.json`；对应 helper 保存在同级 `helpers\helper-<id>.ps1`。使用当前 pending 或状态结果对应的计划，不要随意选择其他历史事务。恢复入口只读取并验证该事务的旧文件备份，不要求已移动的 staging 文件还存在。它恢复更新器代码，不安装 ChatGPT。
 
 信任边界：清单 URL 固定在 `https://github.com/ymt200120/chatgpt-desktop-updater-public`，ZIP 和文件哈希也来自该 Release。当前版本没有额外的发布签名密钥，因此信任根是该 GitHub 仓库账号、HTTPS 和用户显式 `-Apply`；仓库账号或本机被控制不在防护范围内。发布新版本可使用 `scripts\New-UpdaterRelease.ps1` 生成 `updater-release.json` 和生产 ZIP。
 

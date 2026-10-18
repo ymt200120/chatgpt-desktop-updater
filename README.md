@@ -1,15 +1,14 @@
 # ChatGPT Desktop updater
 
-This repository contains a source-only community Beta updater for the
+This repository contains a community updater for the
 current Windows user. Read the [中文说明](README.zh-CN.md) or the detailed
 [operational guide](chatgpt-updater/README.md).
 It is unofficial and is not affiliated with OpenAI or Microsoft.
 
-The current Beta was personally verified on Windows 11 x64. The code contains
-x64 and ARM64 paths, but ARM64 and Windows 10 hardware deployment are not
+Deferred installation and registration have been verified on Windows 11 x64.
+The code contains x64 and ARM64 paths, but ARM64 and Windows 10 hardware deployment are not
 verified or guaranteed in this version. Actual desktop mouse and focus
-acceptance is incomplete, and real AppX deployment of these modules has not
-been newly exercised. The updater does not change ChatGPT's built-in updater
+acceptance is incomplete. The updater does not change ChatGPT's built-in updater
 policy or Microsoft Store update policy.
 
 ## Requirements and boundaries
@@ -37,12 +36,17 @@ The updater's own scripts are replaced only by an explicit
 GitHub release manifest and SHA-256 hashes, stages the files, waits for the
 current process to exit, and keeps a rollback backup. The background task never
 calls that command and never silently updates the updater.
+Version 0.2.0.2 adds cancellation-aware activation, verified recovery backups,
+shared update locking, and explicit recovery status. Use `-Status` to inspect an
+interrupted transaction and `-Rollback` to cancel or restore it. Release assets
+include the updater runtime ZIP, source ZIP, manifest, and SHA-256 checksums.
 
 `0x80073D02` means Windows reports package resources in use. The official app
 can include an automatically started Windows service, so this can happen even
 if no app window was opened. Closing the window may not resolve it. This
 updater requests Windows deferred registration when the package is in use: the
-update is staged and registered on the next ChatGPT launch. It does not force
+update is staged until Windows can complete registration. A packaged service
+can require a Windows restart and sign-in before registration completes. It does not force
 applications to close, stop or reconfigure services, or elevate. If deferral is
 still rejected, the candidate is retained and the operation is never reported
 as a successful installation.

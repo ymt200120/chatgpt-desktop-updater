@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0.2 — 2026-10-18
+
+- Coordinate rollback and detached activation through durable transaction state
+  so a waiting helper cannot reactivate a cancelled update.
+- Prepare verified recovery backups before replacing updater files, and retain
+  recovery state when activation or restoration is interrupted.
+- Keep recovery records and their seals immutable, write activation progress
+  separately, and restore files through verified atomic replacements. A saved
+  helper provides `-Recover` even when the stable scripts or staging are incomplete.
+- Coordinate self-update with the ordinary updater lock and stop on scheduled
+  task query errors instead of treating them as a missing task.
+- Report incomplete task restoration or pending-marker cleanup as requiring
+  recovery rather than a clean activation success.
+- Preserve deferred AppX registration state independently of reminder and error
+  messages, including legacy deferred state.
+- Harden self-update path checks against reparse-point ancestors, disable curl
+  URL globbing, and reject mismatched release tags in the release packager.
+- Add isolated regression coverage for cancellation, interrupted recovery,
+  concurrent operations, postcondition failures, and deferred registration.
+- Read transaction JSON explicitly as UTF-8 in both PowerShell runtimes,
+  including paths containing non-ASCII characters, spaces, and brackets.
+- Real ChatGPT installation continues to require the user's own click on the
+  install button; this release does not stop apps or services to force updates.
+
 ## 0.2.0.1 — 2026-10-18
 
 - Request Windows deferred registration (`DeferRegistrationWhenPackagesAreInUse`)
@@ -47,4 +71,4 @@
   deployment, real AppX deployment of these modules, and genuine desktop mouse
   and focus acceptance remain unverified or incomplete.
 
-This is a Beta source snapshot. Release assets contain source code only.
+The 0.1.0-beta.1 release was a source-only Beta snapshot.

@@ -9,6 +9,8 @@ chatgpt-updater/tests/evidence/
 # Private development prompts and machine-specific implementation report.
 /ChatGPT_Updater*.md
 chatgpt-updater/IMPLEMENTATION_REPORT.md
+/开发日志.md
+/审计报告_*.md
 
 # Generated source release archives.
 /dist/

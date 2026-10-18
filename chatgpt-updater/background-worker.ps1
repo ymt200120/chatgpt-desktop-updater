@@ -153,13 +153,23 @@ function Invoke-UbBackgroundWorker {
     try {
         $state = Get-UbWorkerState -Root $root
         $candidate = Get-UbProperty $state 'Candidate'
-        if ($null -ne $candidate -and [string](Get-UbProperty $state 'LastMessage') -eq 'Deferred') {
+        $deferredCandidateKey = Get-UbProperty $state 'DeferredCandidateKey'
+        if ($null -ne $candidate -and
+            $null -ne $deferredCandidateKey -and
+            [string]$deferredCandidateKey -ceq [string](Get-UbProperty $candidate 'Key')) {
             # The previous confirmed install succeeded but Windows deferred the
             # registration because the package was in use.  Observe the next
             # launch even when the seven-day HEAD interval is not due.
             try {
                 $deferredInstalled = Get-UbWorkerInstalled
-                if ($null -ne $deferredInstalled -and (Compare-UtVersion -A $deferredInstalled.Version -B ([version]$candidate.Version)) -ge 0) {
+                # Get-UtInstalledPackage normally rejects non-Ok AppX states,
+                # but test and future boundary implementations may surface a
+                # package while it is still Servicing.  Version alone is not a
+                # successful registration signal in that state.
+                $deferredStatus = [string](Get-UbProperty $deferredInstalled 'Status')
+                if ($null -ne $deferredInstalled -and
+                    $deferredStatus -ceq 'Ok' -and
+                    (Compare-UtVersion -A $deferredInstalled.Version -B ([version]$candidate.Version)) -ge 0) {
                     $null = Clear-UbCandidate -Root $root -Message 'Deferred update completed; installed package is current.'
                     Write-UbLog -Root $root -Message ("Deferred update completed; registered version {0}." -f $deferredInstalled.Version)
                     return [pscustomobject]@{ Status = 'AlreadyCurrent'; Code = 0; Message = 'Deferred update completed; installed package is current.'; Version = $deferredInstalled.Version }

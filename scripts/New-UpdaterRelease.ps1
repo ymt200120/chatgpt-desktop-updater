@@ -29,6 +29,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Pa
 if ([string]::IsNullOrWhiteSpace($BaseUrl)) { $BaseUrl = 'https://github.com/' + $script:UtUpdaterRepository + '/releases/download/v' + $versionValue.ToString() }
 $BaseUrl = $BaseUrl.TrimEnd('/')
 if ($BaseUrl -notmatch '^https://github\.com/ymt200120/chatgpt-desktop-updater-public/releases/download/v[0-9.]+$') { throw 'BaseUrl must be the pinned public GitHub release download URL.' }
+$expectedBaseUrl = 'https://github.com/' + $script:UtUpdaterRepository + '/releases/download/v' + $versionValue.ToString()
+if ($BaseUrl -ine $expectedBaseUrl) { throw 'BaseUrl release tag must match the requested version.' }
 
 $outputFull = [IO.Path]::GetFullPath($OutputDirectory)
 $null = New-Item -ItemType Directory -Path $outputFull -Force

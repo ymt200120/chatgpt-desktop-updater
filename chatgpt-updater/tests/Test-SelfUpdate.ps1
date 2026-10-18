@@ -185,7 +185,6 @@ Invoke-Case 'detached helper activates only the staged files and keeps a backup'
     $lockPath = Join-Path $script:StateRoot 'helper.lock'
     $pendingPath = Join-Path $script:StableRoot 'self-update.pending.json'
     $null = New-Item -ItemType Directory -Path $backupRoot -Force
-    [IO.File]::WriteAllText($pendingPath, '{"Schema":1}', (New-Object Text.UTF8Encoding($false)))
     $plan = [ordered]@{
         Schema = 1
         Version = $script:Release.Version
@@ -204,6 +203,14 @@ Invoke-Case 'detached helper activates only the staged files and keeps a backup'
         Files = @($script:Release.Manifest.Files | ForEach-Object { [ordered]@{ Name = $_.Name; SHA256 = $_.SHA256 } })
     }
     [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+    $legacyPending = [ordered]@{
+        Schema = 1
+        Version = $plan.Version
+        BackupRoot = $plan.BackupRoot
+        StagingRoot = $plan.StagingRoot
+        ResultPath = $plan.ResultPath
+    }
+    [IO.File]::WriteAllText($pendingPath, ($legacyPending | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
     $helper = Join-Path $script:Staging.FullName 'self-update-helper.ps1'
     $helperRun = Invoke-TestChild -FilePath $script:Runtime -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$helper,'-PlanPath',$planPath)
     Assert-Equal 0 $helperRun.Code 'helper exit code'
@@ -219,7 +226,7 @@ Invoke-Case 'detached helper activates only the staged files and keeps a backup'
 
 Invoke-Case 'rollback restores the previous files and version' {
     $result = Invoke-SelfUpdate @('-Rollback', '-TestMode', '-StableRoot', $script:StableRoot)
-    Assert-Equal 0 $result.Code 'rollback exit code'
+    Assert-Equal 0 $result.Code ('rollback exit code; output: ' + $result.Text)
     Assert-Equal $script:StableVersion (Get-StableVersion) 'rollback restores the old VERSION'
     Assert-True ((Get-Content -LiteralPath (Join-Path $script:StableRoot 'update-chatgpt.ps1') -Raw) -notlike ('*self-update test release ' + $script:NextVersion + '*')) 'rollback restores the old content'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:StableRoot 'self-update.pending.json') -PathType Leaf)) 'rollback clears a stale pending marker'
@@ -248,7 +255,6 @@ Invoke-Case 'helper refuses a staged hash mismatch and leaves the old version in
     $backupRoot = Join-Path $script:StateRoot ('backups\bad-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $backupRoot -Force
     $pendingPath = Join-Path $script:StableRoot 'self-update.pending.json'
-    [IO.File]::WriteAllText($pendingPath, '{"Schema":1}', (New-Object Text.UTF8Encoding($false)))
     $planPath = Join-Path $script:StateRoot 'bad-plan.json'
     $resultPath = Join-Path $script:StateRoot 'bad-result.json'
     $plan = [ordered]@{
@@ -269,6 +275,14 @@ Invoke-Case 'helper refuses a staged hash mismatch and leaves the old version in
         Files = @($script:Release.Manifest.Files | ForEach-Object { [ordered]@{ Name = $_.Name; SHA256 = $_.SHA256 } })
     }
     [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+    $legacyPending = [ordered]@{
+        Schema = 1
+        Version = $plan.Version
+        BackupRoot = $plan.BackupRoot
+        StagingRoot = $plan.StagingRoot
+        ResultPath = $plan.ResultPath
+    }
+    [IO.File]::WriteAllText($pendingPath, ($legacyPending | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
     $before = Get-Hash (Join-Path $script:StableRoot 'update-chatgpt.ps1')
     $badRun = Invoke-TestChild -FilePath $script:Runtime -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $staging.FullName 'self-update-helper.ps1'),'-PlanPath',$planPath)
     Assert-Equal 1 $badRun.Code 'tampered helper exit code'
@@ -276,6 +290,19 @@ Invoke-Case 'helper refuses a staged hash mismatch and leaves the old version in
     Assert-True (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) 'failed helper removes a recoverable pending marker'
     $badResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
     Assert-Equal 'Failed' $badResult.Status 'failed helper result status'
+}
+
+$recoverySuite = Join-Path $PSScriptRoot 'Test-SelfUpdateRecovery.ps1'
+$recoveryRun = Invoke-TestChild -FilePath $script:Runtime -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoverySuite)
+if ($recoveryRun.Code -eq 0 -and $recoveryRun.Text -match '(?m)^All ([1-9][0-9]*) self-update recovery test cases passed\.[\r]?$') {
+    $recoveryCount = [int]$Matches[1]
+    $script:TestTotal += $recoveryCount
+    Write-Host ('PASS independent recovery suite ({0} cases)' -f $recoveryCount) -ForegroundColor Green
+} else {
+    $script:TestTotal++
+    $script:TestFailed++
+    Write-Host ('FAIL independent recovery suite (exit {0}):' -f $recoveryRun.Code) -ForegroundColor Red
+    Write-Host $recoveryRun.Text
 }
 
 $env:LOCALAPPDATA = $script:OriginalLocalAppData

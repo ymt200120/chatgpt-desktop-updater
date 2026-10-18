@@ -151,6 +151,10 @@ function New-UbEmptyState {
         LastCheckAttempt = $null
         LastPrepareSuccess = $null
         Candidate = $null
+        # A deferred registration is durable phase state, independent from the
+        # human-readable LastMessage.  The key binds it to one candidate so a
+        # later candidate cannot inherit a previous deferred completion probe.
+        DeferredCandidateKey = $null
         SnoozeUntil = $null
         LastFailure = $null
         NextRetryAt = $null
@@ -294,6 +298,27 @@ function Read-UbState {
     if ([string]::IsNullOrWhiteSpace($result.LastMessage)) { $result.LastMessage = $null }
     $candidate = Get-UbProperty $state 'Candidate'
     if ($null -ne $candidate) { $result.Candidate = Assert-UbCandidate $candidate }
+
+    # Schema 1 states written before DeferredCandidateKey existed have only
+    # LastMessage='Deferred'.  Migrate that marker only when the field is
+    # absent, and bind it to the candidate that was already persisted.  A
+    # present null marker is treated as an intentional clear, which prevents
+    # a newer state from inventing deferred state from stale display text.
+    $hasDeferredMarker = $null -ne $state.PSObject.Properties['DeferredCandidateKey']
+    $rawDeferredKey = Get-UbProperty $state 'DeferredCandidateKey'
+    if ($null -ne $rawDeferredKey -and -not [string]::IsNullOrWhiteSpace([string]$rawDeferredKey)) {
+        try { $result.DeferredCandidateKey = ConvertTo-UbKey ([string]$rawDeferredKey) }
+        catch { throw 'Background state contains an invalid deferred candidate key.' }
+    }
+    if ($null -eq $result.Candidate) {
+        $result.DeferredCandidateKey = $null
+    } elseif ($null -ne $result.DeferredCandidateKey) {
+        # A marker for another candidate is stale and cannot authorize a
+        # completion check for the currently stored candidate.
+        if ([string]$result.DeferredCandidateKey -cne [string]$result.Candidate.Key) { $result.DeferredCandidateKey = $null }
+    } elseif (-not $hasDeferredMarker -and $result.LastMessage -ceq 'Deferred') {
+        $result.DeferredCandidateKey = [string]$result.Candidate.Key
+    }
     return $result
 }
 
@@ -325,6 +350,18 @@ function Write-UbState {
     $normalized.LastMessage = if ([string]::IsNullOrWhiteSpace([string](Get-UbProperty $State 'LastMessage'))) { $null } else { [string](Get-UbProperty $State 'LastMessage') }
     $candidate = Get-UbProperty $State 'Candidate'
     if ($null -ne $candidate) { $normalized.Candidate = Assert-UbCandidate $candidate }
+    $hasDeferredMarker = $null -ne $State.PSObject.Properties['DeferredCandidateKey']
+    $deferredKey = Get-UbProperty $State 'DeferredCandidateKey'
+    if ($null -ne $deferredKey -and -not [string]::IsNullOrWhiteSpace([string]$deferredKey)) {
+        $normalized.DeferredCandidateKey = ConvertTo-UbKey ([string]$deferredKey)
+        if ($null -eq $normalized.Candidate -or [string]$normalized.DeferredCandidateKey -cne [string]$normalized.Candidate.Key) {
+            $normalized.DeferredCandidateKey = $null
+        }
+    } elseif (-not $hasDeferredMarker -and $null -ne $normalized.Candidate -and $normalized.LastMessage -ceq 'Deferred') {
+        # Keep direct writes of a legacy state compatible with Read-UbState's
+        # migration rule while still respecting an explicit null marker.
+        $normalized.DeferredCandidateKey = [string]$normalized.Candidate.Key
+    }
     $json = $normalized | ConvertTo-Json -Depth 8 -Compress
     if ([Text.Encoding]::UTF8.GetByteCount($json) -gt $script:UbMaxStateBytes) { throw 'Background state exceeds its size limit.' }
     Write-UbAtomicText -Path (Get-UbStatePath -Root $Root) -Text $json
@@ -467,12 +504,22 @@ function Set-UbCandidate {
     try {
         $lock = Enter-UbStateLock -Root $Root
         $state = Read-UbState -Root $Root
+        $previousCandidate = Get-UbProperty $state 'Candidate'
         $state.Candidate = Assert-UbCandidate $Candidate
         $state.LastPrepareSuccess = $utcText
         $state.SnoozeUntil = $null
         $state.LastFailure = $null
         $state.NextRetryAt = $null
         $state.LastMessage = 'Ready'
+        $sameCandidate = $false
+        if ($null -ne $previousCandidate -and
+            [string]$previousCandidate.Key -ceq [string]$state.Candidate.Key -and
+            [string]$previousCandidate.Version -ceq [string]$state.Candidate.Version) {
+            $sameCandidate = Test-UbSnapshotMatch -A $previousCandidate.Snapshot -B $state.Candidate.Snapshot
+        }
+        if (-not $sameCandidate) {
+            $state.DeferredCandidateKey = $null
+        }
         return Write-UbState -State $state -Root $Root
     } finally { if ($null -ne $lock) { $lock.Dispose() } }
 }
@@ -503,12 +550,22 @@ function Set-UbDeferred {
     # next launch without prompting again immediately.
     param([string]$Root, [datetime]$Now = [datetime]::MinValue, [TimeSpan]$Duration = $script:UbSnoozeInterval)
     $until = (Get-UbNowUtc $Now).Add($Duration).ToString('o')
-    return Set-UbStateFields -Root $Root -Changes @{ SnoozeUntil = $until; LastMessage = 'Deferred' }
+    $lock = $null
+    try {
+        $lock = Enter-UbStateLock -Root $Root
+        $state = Read-UbState -Root $Root
+        $candidate = Get-UbProperty $state 'Candidate'
+        if ($null -eq $candidate) { throw 'Cannot mark a deferred registration without a candidate.' }
+        $state.DeferredCandidateKey = [string]$candidate.Key
+        $state.SnoozeUntil = $until
+        $state.LastMessage = 'Deferred'
+        return Write-UbState -State $state -Root $Root
+    } finally { if ($null -ne $lock) { $lock.Dispose() } }
 }
 
 function Clear-UbCandidate {
     param([string]$Root, [string]$Message = 'Candidate cleared', [switch]$ImmediateRetry)
-    $changes = @{ Candidate = $null; SnoozeUntil = $null; LastMessage = $Message }
+    $changes = @{ Candidate = $null; DeferredCandidateKey = $null; SnoozeUntil = $null; LastMessage = $Message }
     if ($ImmediateRetry) { $changes.LastSuccessfulCheck = $null; $changes.NextRetryAt = $null }
     return Set-UbStateFields -Root $Root -Changes $changes
 }

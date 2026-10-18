@@ -1340,6 +1340,14 @@ function Invoke-UtUpdater {
             try { $prepareLock = Enter-UtLock } catch {
                 Stop-Ut $script:UtExitLock "Another updater instance holds the lock, or the lock could not be acquired: $($_.Exception.Message)"
             }
+            # Re-check after taking the ordinary update lock.  The first gate
+            # below the function boundary is useful for avoiding network work,
+            # but this second check closes the handoff race with self-update:
+            # a helper may publish its pending marker after this process began.
+            $selfUpdatePendingAfterLock = Join-Path $PSScriptRoot 'self-update.pending.json'
+            if (Test-Path -LiteralPath $selfUpdatePendingAfterLock -PathType Leaf) {
+                Stop-Ut $script:UtExitLock 'A self-update activation is pending or incomplete. Wait for the helper to finish, then run update-updater.cmd -Status.'
+            }
             $prepared = Get-UtPreparedCandidate -Metadata $metadata -Architecture $architecture -WindowsVersion $windowsVersion -Connections $Connections
             Write-UtLine ("Candidate:  {0}, {1} bytes" -f $metadata.Version, $metadata.ContentLength)
             Write-UtLine ("SHA256:     {0}" -f $prepared.SHA256)
